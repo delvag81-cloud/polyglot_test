@@ -1,0 +1,148 @@
+name: Polyglot CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  polyglot:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        lang:
+          - name: python
+            test: 'python -m unittest -v'
+
+          - name: node
+            test: 'node calc.test.js'
+
+          - name: php
+            test: 'php CalcTest.php'
+
+          - name: java
+            test: 'javac -d out src/main/java/Calculator.java src/test/java/CalculatorTest.java && java -ea -cp out CalculatorTest'
+
+          - name: ruby
+            test: 'ruby calc_spec.rb'
+
+          - name: rust
+            test: 'cargo test --quiet'
+
+          - name: go
+            test: 'go test -v'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make helper script executable
+        run: chmod +x "$GITHUB_WORKSPACE/pack_json.sh"
+
+      # ---------- RUNTIME SETUP PER LANGUAGE ----------
+
+      - name: Setup Python
+        if: matrix.lang.name == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node
+        if: matrix.lang.name == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup PHP
+        if: matrix.lang.name == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - name: Setup Java
+        if: matrix.lang.name == 'java'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Setup Ruby
+        if: matrix.lang.name == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Setup Rust
+        if: matrix.lang.name == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        if: matrix.lang.name == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # ---------- STRICT TEST EXECUTION ----------
+      # this block ensures GH Actions gets TRUE exit code from tests
+
+      - name: Run tests (capture output + exit code)
+        id: run_tests
+        working-directory: ${{ matrix.lang.name }}
+        run: |
+          set -o pipefail
+          ${{ matrix.lang.test }} > result.txt 2>&1
+          echo $? > exit_code.txt
+
+      - name: Read exit code
+        id: code
+        working-directory: ${{ matrix.lang.name }}
+        run: echo "code=$(cat exit_code.txt)" >> $GITHUB_OUTPUT
+
+      # ---------- PACK JSON (ALWAYS RUN) ----------
+
+      - name: Pack JSON
+        if: always()
+        run: |
+          bash "$GITHUB_WORKSPACE/pack_json.sh" \
+            "${{ matrix.lang.name }}" \
+            "$GITHUB_WORKSPACE/${{ matrix.lang.name }}/result.txt" \
+            "$GITHUB_WORKSPACE/${{ matrix.lang.name }}/exit_code.txt" \
+            "$GITHUB_WORKSPACE/${{ matrix.lang.name }}.json"
+
+      - name: Upload JSON artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.lang.name }}
+          path: ${{ matrix.lang.name }}.json
+
+      # ---------- FAIL JOB IF EXIT CODE != 0 ----------
+
+      - name: Fail if tests failed
+        if: steps.code.outputs.code != '0'
+        run: |
+          echo "Tests failed for ${{ matrix.lang.name }}"
+          exit 1
+
+  # ---------- FINAL REPORT JOB ----------
+
+  report:
+    runs-on: ubuntu-latest
+    needs: [polyglot]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download JSON chunks
+        uses: actions/download-artifact@v4
+        with:
+          path: reports
+
+      - name: Generate final HTML report
+        run: python3 generate_report.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: polyglot-test-report
+          path: report.html
